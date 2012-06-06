@@ -1,0 +1,26 @@
+#ifndef CONFIG_H
+#define CONFIG_H 1
+
+#define CHARM_DIRECTORY     ".Charm"
+#define TASK_PATH           "lucky.task"
+#define BOOKMARK_TASKS_PATH "lucky.bookmark"
+#define RECENT_TASKS_PATH   "lucky.recent"
+
+#define BOOKMARK_TASKS_MAX  ${BOOKMARK_TASKS_MAX}
+#define RECENT_TASKS_MAX    ${RECENT_TASKS_MAX}
+
+#define CHARM_DB_DEBUG      "${CHARM_DB_DEBUG}"
+#define CHARM_DB_RELEASE    "${CHARM_DB_RELEASE}"
+
+#ifdef NDEBUG
+#  define CHARM_DB          "${CHARM_DB_RELEASE}"
+#else
+#  define CHARM_DB          "${CHARM_DB_DEBUG}"
+#endif
+
+#ifndef NDEBUG
+#define DEBUG TRUE
+#cmakedefine01 DEBUG_VERBOSE
+#endif
+
+#endif

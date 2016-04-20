@@ -1,6 +1,7 @@
 set(CLICHARM_SRCS "main.c"
                   "db.c"
-                  "task.c")
+                  "task.c"
+                  "stack.c")
 
 include_directories(AFTER SYSTEM ${SQLITE_INCLUDE_DIR})
 

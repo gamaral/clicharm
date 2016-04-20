@@ -34,7 +34,7 @@
 /****************************************************************** compiler constants */
 
 #define MAX_TASK_COMMENT_LEN 255
-#define MAX_TASK_NAME_LEN 127
+#define MAX_TASK_NAME_LEN 512
 #define MAX_TASK_RECENT_LEN RECENT_TASKS_MAX
 #define MAX_TASK_BOOKMARK_LEN BOOKMARK_TASKS_MAX
 

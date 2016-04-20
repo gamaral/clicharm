@@ -26,16 +26,19 @@
 
 #include "task.h"
 
+#include <assert.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "session.h"
+#include "stack.h"
 
 /************************************************************************ declarations */
 
-static int task_select_callback(void *null, int columns, char **data, char **headers);
+static int task_recurse_name_callback(void *, int, char **, char **);
 static int task_tasks_callback(void *, int, char **, char **);
 
 /*************************************************************************** constants */
@@ -153,6 +156,26 @@ task_comment(const char *comment)
 {
 	strncpy(task.comment, comment, MAX_TASK_COMMENT_LEN);
 	modtask = TRUE;
+}
+
+void
+task_recurse_name(int id, char *task_name)
+{
+	char querystr[128];
+	char *errstr;
+	int   errcode;
+
+	sprintf(querystr, "SELECT `parent`, `name` FROM `Tasks` "
+	                  "WHERE `task_id` = \"%d\" LIMIT 1",
+	                  id);
+
+	errcode = sqlite3_exec(session.db, querystr, task_recurse_name_callback, task_name, &errstr);
+	if (SQLITE_OK != errcode &&
+	    SQLITE_ABORT != errcode) {
+		ERROR((stderr, "SQL error: %s\n", errstr));
+		sqlite3_free(errstr);
+		quit(-1);
+	}
 }
 
 void
@@ -285,27 +308,12 @@ task_save(int fd)
 	modtask = FALSE;
 }
 
-void task_select(int id)
+void
+task_select(int id)
 {
-	char querystr[512];
-	void *null = 0;
-	char *errstr;
-	int   errcode;
-
 	task.task_id = id;
-	strcpy(task.task_name, "UNKNOWN");
-
-	sprintf(querystr, "SELECT `name` FROM `Tasks` "
-	                  "WHERE `task_id` = \"%d\" LIMIT 1",
-	                  id);
-
-	errcode = sqlite3_exec(session.db, querystr, task_select_callback, null, &errstr);
-	if (SQLITE_OK != errcode &&
-	    SQLITE_ABORT != errcode) {
-		ERROR((stderr, "SQL error: %s\n", errstr));
-		sqlite3_free(errstr);
-		quit(-1);
-	}
+	memset(task.task_name, 0, sizeof(task.task_name));
+	task_recurse_name(id, task.task_name);
 	modtask = TRUE;
 }
 
@@ -356,8 +364,8 @@ task_store(void)
 void
 task_tasks(const char *keyword)
 {
+	STACK leafs;
 	char querystr[512];
-	void *null = 0;
 	char *errstr;
 
 	sprintf(querystr, "SELECT `task_id`, `name` FROM `Tasks` "
@@ -366,36 +374,99 @@ task_tasks(const char *keyword)
 			    "AND (`validuntil` >= \"now\" OR `validuntil` ISNULL)",
 			  keyword, keyword);
 
-	if (SQLITE_OK != sqlite3_exec(session.db, querystr, task_tasks_callback, null, &errstr) ) {
+	leafs = stack_create();
+
+	if (SQLITE_OK != sqlite3_exec(session.db, querystr, task_tasks_callback, leafs, &errstr) ) {
 		ERROR((stderr, "SQL error: %s\n", errstr));
 		sqlite3_free(errstr);
 		quit(-1);
 	}
+
+	stack_destroy(leafs);
 }
 
-/******************************************************************* local definitions */
+void
+task_find_leafs(STACK stack, int parent)
+{
+	char querystr[128];
+	int children;
+	int ret;
+	sqlite3_stmt *stmt;
+
+	sprintf(querystr, "SELECT `task_id` FROM `Tasks` "
+	                  "WHERE `parent` = \"%d\"", parent);
+	
+	ret = sqlite3_prepare_v2(session.db, querystr, sizeof(querystr), &stmt, NULL);
+	if (SQLITE_OK != ret) {
+		ERROR((stderr, "SQL error: %s\n", sqlite3_errmsg(session.db)));
+		quit(-1);
+	}
+	assert(stmt);
+
+	children = 0;
+	do {
+		ret = sqlite3_step(stmt);
+		switch (ret) {
+		case SQLITE_ROW:
+			++children;
+			task_find_leafs(stack, sqlite3_column_int(stmt, 0));
+			/* fall-through */
+		case SQLITE_DONE:
+			break;
+
+		default:
+			ERROR((stderr, "SQL error: %s\n", sqlite3_errmsg(session.db)));
+			quit(-1);
+			break;
+		}
+	} while (SQLITE_DONE != ret);
+	
+	if (0 == children)
+		stack_push(stack, parent);
+}
 
 int
-task_select_callback(void *null, int columns, char **data, char **headers)
+task_recurse_name_callback(void *task_name, int columns, char **data, char **headers)
 {
-	UNUSED(null);
+	int task_id;
+
 	UNUSED(columns);
 	UNUSED(headers);
 
-	strncpy(task.task_name, data[0], MAX_TASK_NAME_LEN);
+	task_id = atoi(data[0]);
+
+	if (*(char *)task_name != '\0')
+	    strncat((char *)task_name, " < ", MAX_TASK_NAME_LEN);
+
+	strncat((char *)task_name, data[1], MAX_TASK_NAME_LEN);
+
+	if (task_id != 0)
+		task_recurse_name(task_id, task_name);
 
 	return (1);
 }
 
 int
-task_tasks_callback(void *null, int columns, char **data, char **headers)
+task_tasks_callback(void *stack, int columns, char **data, char **headers)
 {
-	UNUSED(null);
+	int task_id;
+	char task_name[MAX_TASK_NAME_LEN + 1];
+
 	UNUSED(columns);
 	UNUSED(headers);
 
-	printf("[%4s] %s\n", data[0], data[1]);
+	task_find_leafs(stack, atoi(data[0]));
 
+	while (stack_empty(stack) == FALSE) {
+		memset(task_name, 0, sizeof(task_name));
+		task_id = stack_pop(stack);
+		task_recurse_name(task_id, task_name);
+	
+		printf("[%04d] %s\n",
+		       task_id,
+		       task_name);
+	}
+	
 	return (0);
 }
 

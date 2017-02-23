@@ -38,6 +38,7 @@ STACK stack_create(void);
 void stack_destroy(STACK s);
 void stack_push(STACK s, int value);
 int stack_pop(STACK s);
+BOOL stack_contains(STACK s, int value);
 BOOL stack_empty(STACK s);
 
 #endif

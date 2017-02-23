@@ -88,9 +88,8 @@ task_bookmark_print(void)
 		if (0 == bookmark.tasks[i].task_id) {
 			printf("Index %02d: EMPTY\n", i);
 		} else {
-			printf("Index %02d: [%04d] %s (%s)\n",
+			printf("Index %02d: %s (%s)\n",
 			       i,
-			       bookmark.tasks[i].task_id,
 			       bookmark.tasks[i].task_name,
 			       bookmark.tasks[i].comment);
 		}
@@ -165,7 +164,7 @@ task_recurse_name(int id, char *task_name)
 	char *errstr;
 	int   errcode;
 
-	sprintf(querystr, "SELECT `parent`, `name` FROM `Tasks` "
+	sprintf(querystr, "SELECT `parent`, `task_id`, `trackable`, `name` FROM `Tasks` "
 	                  "WHERE `task_id` = \"%d\" LIMIT 1",
 	                  id);
 
@@ -200,14 +199,14 @@ task_print(void)
 		delta_t -= (hours * SECONDS_PER_HOUR);
 		minutes = floor(delta_t / SECONDS_PER_MINUTE);
 		seconds = delta_t - (minutes * SECONDS_PER_MINUTE);
-		
-		printf("Task: [%04d] %s\nComment: %s\nStarted: %sRunning Time: %02d:%02d:%02d\n\n",
-		       task.task_id, task.task_name, task.comment, ctime(&task.start_time),
+
+		printf("Task: %s\nComment: %s\nStarted: %sRunning Time: %02d:%02d:%02d\n\n",
+		       task.task_name, task.comment, ctime(&task.start_time),
 		       (int) hours, (int) minutes, (int) seconds);
 	} else {
 		printf("** No task currently running **\n\n");
-		printf("Task: [%04d] %s\nComment: %s\n\n",
-		       task.task_id, task.task_name, task.comment);
+		printf("Task: %s\nComment: %s\n\n",
+		       task.task_name, task.comment);
 	}
 }
 
@@ -366,13 +365,15 @@ task_tasks(const char *keyword)
 {
 	STACK leafs;
 	char querystr[512];
+	char task_name[MAX_TASK_NAME_LEN + 1];
 	char *errstr;
+	int task_id;
 
 	sprintf(querystr, "SELECT `task_id`, `name` FROM `Tasks` "
 	                  "WHERE (`name` LIKE \"%%%s%%\"  OR `task_id` = \"%s\") "
-			    "AND (`validfrom`  <= \"now\" OR `validfrom`  ISNULL) "
-			    "AND (`validuntil` >= \"now\" OR `validuntil` ISNULL)",
-			  keyword, keyword);
+	                    "AND (`validfrom`  <= CURRENT_DATE OR `validfrom`  ISNULL) "
+	                    "AND (`validuntil` >= CURRENT_DATE OR `validuntil` ISNULL)",
+	                   keyword, keyword);
 
 	leafs = stack_create();
 
@@ -382,34 +383,50 @@ task_tasks(const char *keyword)
 		quit(-1);
 	}
 
+	while (stack_empty(leafs) == FALSE) {
+		memset(task_name, 0, sizeof(task_name));
+		task_id = stack_pop(leafs);
+		task_recurse_name(task_id, task_name);
+
+		printf("%s\n", task_name);
+	}
+
 	stack_destroy(leafs);
 }
 
-void
-task_find_leafs(STACK stack, int parent)
+BOOL
+task_trackable(int id)
 {
-	char querystr[128];
-	int children;
+	BOOL trackable;
 	int ret;
 	sqlite3_stmt *stmt;
 
-	sprintf(querystr, "SELECT `task_id` FROM `Tasks` "
-	                  "WHERE `parent` = \"%d\"", parent);
-	
+	const char querystr[] =
+	    "SELECT `trackable` FROM `Tasks` "
+	    "WHERE (`task_id` = ?) "
+	       "AND (`validfrom`  <= CURRENT_DATE OR `validfrom`  ISNULL) "
+	       "AND (`validuntil` >= CURRENT_DATE OR `validuntil` ISNULL) "
+	       "LIMIT 1";
+
 	ret = sqlite3_prepare_v2(session.db, querystr, sizeof(querystr), &stmt, NULL);
 	if (SQLITE_OK != ret) {
-		ERROR((stderr, "SQL error: %s\n", sqlite3_errmsg(session.db)));
+		ERROR((stderr, "SQL error: '%s' %s\n", querystr, sqlite3_errmsg(session.db)));
 		quit(-1);
 	}
 	assert(stmt);
 
-	children = 0;
+	ret = sqlite3_bind_int(stmt, 1, id);
+	if (SQLITE_OK != ret) {
+		ERROR((stderr, "SQL error: '%s' %s\n", querystr, sqlite3_errmsg(session.db)));
+		quit(-1);
+	}
+
+	trackable = FALSE;
 	do {
 		ret = sqlite3_step(stmt);
 		switch (ret) {
 		case SQLITE_ROW:
-			++children;
-			task_find_leafs(stack, sqlite3_column_int(stmt, 0));
+			trackable = sqlite3_column_int(stmt, 0) == 1;
 			/* fall-through */
 		case SQLITE_DONE:
 			break;
@@ -420,28 +437,88 @@ task_find_leafs(STACK stack, int parent)
 			break;
 		}
 	} while (SQLITE_DONE != ret);
-	
-	if (0 == children)
+
+	sqlite3_finalize(stmt);
+
+	return trackable;
+}
+
+void
+task_find_leafs(STACK stack, int parent)
+{
+	int ret;
+	sqlite3_stmt *stmt;
+
+	const char querystr[] =
+	    "SELECT `task_id`, `trackable` FROM `Tasks` "
+	    "WHERE (`parent` = ?) "
+	       "AND (`validfrom`  <= CURRENT_DATE OR `validfrom`  ISNULL) "
+	       "AND (`validuntil` >= CURRENT_DATE OR `validuntil` ISNULL)";
+
+	ret = sqlite3_prepare_v2(session.db, querystr, sizeof(querystr), &stmt, NULL);
+	if (SQLITE_OK != ret) {
+		ERROR((stderr, "SQL error: %s\n", sqlite3_errmsg(session.db)));
+		quit(-1);
+	}
+	assert(stmt);
+
+	ret = sqlite3_bind_int(stmt, 1, parent);
+	if (SQLITE_OK != ret) {
+		ERROR((stderr, "SQL error: '%s' %s\n", querystr, sqlite3_errmsg(session.db)));
+		quit(-1);
+	}
+
+	do {
+		ret = sqlite3_step(stmt);
+		switch (ret) {
+		case SQLITE_ROW:
+			task_find_leafs(stack, sqlite3_column_int(stmt, 0));
+			continue;
+
+		case SQLITE_DONE:
+			break;
+
+		default:
+			ERROR((stderr, "SQL error: %s\n", sqlite3_errmsg(session.db)));
+			quit(-1);
+			break;
+		}
+	} while (SQLITE_DONE != ret);
+
+	sqlite3_finalize(stmt);
+
+	if (task_trackable(parent) && !stack_contains(stack, parent)) {
 		stack_push(stack, parent);
+	}
 }
 
 int
 task_recurse_name_callback(void *task_name, int columns, char **data, char **headers)
 {
+	char task_str[MAX_TASK_NAME_LEN];
+	int parent_id;
 	int task_id;
+	BOOL trackable;
 
 	UNUSED(columns);
 	UNUSED(headers);
 
-	task_id = atoi(data[0]);
+	parent_id = atoi(data[0]);
+	task_id = atoi(data[1]);
+	trackable = (atoi(data[2]) == 1);
 
-	if (*(char *)task_name != '\0')
-	    strncat((char *)task_name, " < ", MAX_TASK_NAME_LEN);
+	if (*(char *)task_name != '\0') {
+	    strncat((char *)task_name, "\n   ", MAX_TASK_NAME_LEN);
+	}
 
-	strncat((char *)task_name, data[1], MAX_TASK_NAME_LEN);
+	if (trackable)
+		snprintf(task_str, MAX_TASK_NAME_LEN, "[%04d] %s", task_id, data[3]);
+	else
+		snprintf(task_str, MAX_TASK_NAME_LEN, "{%04d} %s", task_id, data[3]);
+	strncat((char *)task_name, task_str, MAX_TASK_NAME_LEN);
 
-	if (task_id != 0)
-		task_recurse_name(task_id, task_name);
+	if (parent_id != 0)
+		task_recurse_name(parent_id, task_name);
 
 	return (1);
 }
@@ -449,24 +526,11 @@ task_recurse_name_callback(void *task_name, int columns, char **data, char **hea
 int
 task_tasks_callback(void *stack, int columns, char **data, char **headers)
 {
-	int task_id;
-	char task_name[MAX_TASK_NAME_LEN + 1];
-
 	UNUSED(columns);
 	UNUSED(headers);
 
 	task_find_leafs(stack, atoi(data[0]));
 
-	while (stack_empty(stack) == FALSE) {
-		memset(task_name, 0, sizeof(task_name));
-		task_id = stack_pop(stack);
-		task_recurse_name(task_id, task_name);
-	
-		printf("[%04d] %s\n",
-		       task_id,
-		       task_name);
-	}
-	
 	return (0);
 }
 

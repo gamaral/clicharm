@@ -92,6 +92,21 @@ stack_pop(STACK s)
 }
 
 BOOL
+stack_contains(STACK s, int value)
+{
+	struct t_STACK_ITEM *item = s->head;
+	BOOL result = FALSE;
+
+	while (item && !result) {
+		if (item->value == value)
+			result = TRUE;
+		else item = item->next;
+	}
+
+	return(result);
+}
+
+BOOL
 stack_empty(STACK s)
 {
 	return(s->head == NULL ? TRUE : FALSE);
